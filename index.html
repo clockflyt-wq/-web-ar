@@ -90,7 +90,8 @@ const BALL_COLOR = 0xff5722;
 
 // ---- الشخصية (من الكود التاني) ----
 const MODEL_URL    = './assets/Dog Talking.glb';
-const MODEL_HEIGHT = 280;          // طول الشخصية بنفس وحدات التارجت (التارجت = 100)
+const MODEL_HEIGHT = 280;         // طول الشخصية بنفس وحدات التارجت (التارجت = MODEL_SIZE)
+const LOST_GRACE   = 20;          // عدد الفريمات اللي الشخصية تفضل فيها ظاهرة بعد ما التارجت يضيع لحظة (حركة سريعة)
 const MODEL_ROT_Z  = 0;           // لو الشخصية بتبص لاتجاه غلط جرّب 90 أو 180 أو 270
 const TALK_CLIP    = 'Take 001';  // اسم أنيميشن الكلام (لو الاسم غلط بياخد الأنيميشن الأول)
 
@@ -177,7 +178,7 @@ function showMarkerPage() {
 // ---------- الكاميرا والتتبع ----------
 let renderer, scene, camera, anchor, ball, shadow, detector, posit, sun;
 let dw = 640, dh = 480, lost = 999;
-const SMOOTH = 0.5;
+const SMOOTH_MIN = 0.12;   // نعومة الحركة وقت الثبات (أقل = أهدى). وقت الحركة السريعة بتزيد تلقائي
 let mixer = null, clock = null, charLoaded = false, talkAction = null, talking = false;
 let targetQ, targetP, tmpEuler;
 let sunAz = 45, sunEl = 50, autoSun = false;
@@ -218,7 +219,7 @@ function setupThree() {
 
   scene = new THREE.Scene();
   const fov = 2 * Math.atan(dh / (2 * dw)) * 180 / Math.PI;
-  camera = new THREE.PerspectiveCamera(fov, dw / dh, 1, 10000);
+  camera = new THREE.PerspectiveCamera(fov, dw / dh, MODEL_SIZE * 0.02, MODEL_SIZE * 300);
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.55));
 
@@ -320,6 +321,13 @@ function updateSun() {
   sun.position.set(Math.cos(a) * Math.cos(e) * d, Math.sin(a) * Math.cos(e) * d, Math.sin(e) * d);
 }
 
+const _e = new THREE.Euler();
+function poseToQP(R, T) {
+  _e.set(-Math.asin(-R[1][2]), -Math.atan2(R[0][2], R[2][2]), Math.atan2(R[1][0], R[1][1]), 'XYZ');
+  return { q: new THREE.Quaternion().setFromEuler(_e), p: new THREE.Vector3(T[0], T[1], -T[2]) };
+}
+function qAngle(a, b) { return 2 * Math.acos(Math.min(1, Math.abs(a.dot(b)))); }
+
 function tick(t) {
   requestAnimationFrame(tick);
   if (video.readyState < 2) return;
@@ -331,26 +339,30 @@ function tick(t) {
   if (found) {
     const corners = found.corners.map((c) => ({ x: c.x - dw / 2, y: dh / 2 - c.y }));
     const pose = posit.pose(corners);
-    const R = pose.bestRotation, T = pose.bestTranslation;
-    tmpEuler.set(
-      -Math.asin(-R[1][2]),
-      -Math.atan2(R[0][2], R[2][2]),
-      Math.atan2(R[1][0], R[1][1]),
-      'XYZ'
-    );
-    targetQ.setFromEuler(tmpEuler);
-    targetP.set(T[0], T[1], -T[2]);
-    if (!anchor.visible || lost > 8) {
+    let cand = poseToQP(pose.bestRotation, pose.bestTranslation);
+    // POSIT بيرجّع حلّين ممكنين وساعات بيقلب بينهم (ده سبب الرعشة): نختار الأقرب للوضع الحالي لو الحلّين قريبين في الدقة
+    if (anchor.visible && lost <= LOST_GRACE && pose.alternativeRotation && pose.alternativeError < pose.bestError * 2.5) {
+      const alt = poseToQP(pose.alternativeRotation, pose.alternativeTranslation);
+      if (qAngle(alt.q, anchor.quaternion) < qAngle(cand.q, anchor.quaternion)) cand = alt;
+    }
+    targetQ.copy(cand.q);
+    targetP.copy(cand.p);
+    if (!anchor.visible || lost > LOST_GRACE) {
       anchor.position.copy(targetP);
       anchor.quaternion.copy(targetQ);
     } else {
-      anchor.position.lerp(targetP, SMOOTH);
-      anchor.quaternion.slerp(targetQ, SMOOTH);
+      // نعومة متكيّفة: ثبات = هدوء، حركة سريعة = تتبع سريع من غير تأخير
+      const dp = anchor.position.distanceTo(targetP) / MODEL_SIZE;
+      const da = qAngle(anchor.quaternion, targetQ);
+      const k = Math.min(1, Math.max(SMOOTH_MIN, dp * 6, da * 2.5));
+      anchor.position.lerp(targetP, k);
+      anchor.quaternion.slerp(targetQ, k);
     }
     anchor.visible = true;
     lost = 0;
     statusEl.style.display = 'none';
-  } else if (++lost > 8) {
+  } else if (++lost > LOST_GRACE) {
+    // لو التارجت ضاع لحظة بنسيب الشخصية مكانها بدل ما تختفي
     anchor.visible = false;
     if (statusEl.className !== 'err') showStatus('سلّط الكاميرا على التارجت');
   }
@@ -437,17 +449,24 @@ function speakAnswer(text) {
 async function askDadAI(question) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 20000);
+  let r;
   try {
-    const r = await fetch(AI_URL, {
+    r = await fetch(AI_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
       signal: ctl.signal
     });
-    if (!r.ok) throw new Error('Dad AI request failed: ' + r.status);
-    const data = await r.json();
-    return data.answer;
+  } catch (e) {
+    // فشل الاتصال نفسه: غالبًا CORS (الـ Worker مش سامح لدومين الصفحة دي) أو النت
+    throw new Error(e.name === 'AbortError' ? 'timeout' : 'network/CORS');
   } finally { clearTimeout(timer); }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  let data;
+  try { data = await r.json(); } catch (e) { throw new Error('bad JSON'); }
+  const ans = data.answer ?? data.reply ?? data.response ?? data.text;
+  if (!ans) throw new Error('no "answer" field: ' + JSON.stringify(data).slice(0, 80));
+  return ans;
 }
 
 async function handleQuestion(q) {
@@ -459,7 +478,7 @@ async function handleQuestion(q) {
     speakAnswer(answer);
   } catch (err) {
     console.error('Dad AI Error:', err);
-    resultEl.textContent = "Sorry! Dad couldn't answer. Try again.";
+    resultEl.textContent = "Sorry! Dad couldn't answer. Try again. (" + (err && err.message || err) + ")";
     stopTalking();
   }
 }
