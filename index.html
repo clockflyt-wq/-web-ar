@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>روبوت الواقع المعزز</title>
+<style>
+:root{--bg:#f4f6f9;--fg:#14181f;--card:#ffffff;--muted:#5b6574;--accent:#ff6b35;--line:#d9dee6;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1116;--fg:#eef1f5;--card:#181d25;--muted:#9aa5b5;--line:#2b3340}}
+:root[data-theme="dark"]{--bg:#0e1116;--fg:#eef1f5;--card:#181d25;--muted:#9aa5b5;--line:#2b3340}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Tahoma,Arial,sans-serif;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:28px 22px;max-width:420px;width:calc(100% - 32px);text-align:center}
+.card h1{margin:0 0 8px;font-size:26px}.card p{color:var(--muted);line-height:1.7;margin:6px 0 18px;font-size:15px}
+button{font:inherit;font-size:16px;border:0;border-radius:14px;padding:13px 18px;cursor:pointer;width:100%;margin-top:10px;background:var(--accent);color:#fff;font-weight:700}
+button.alt{background:transparent;color:var(--fg);border:1px solid var(--line)}
+#stage{position:relative;display:none;background:#000}
+#stage video,#stage canvas{position:absolute;inset:0;width:100%;height:100%}
+#status{position:absolute;top:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.62);color:#fff;padding:8px 16px;border-radius:999px;font-size:14px;white-space:nowrap;z-index:3}
+#stop{position:absolute;top:10px;right:10px;width:auto;margin:0;z-index:3;background:rgba(0,0,0,.62);padding:8px 14px;font-size:14px}
+#ui{position:absolute;bottom:10px;left:10px;right:10px;z-index:3;display:flex;flex-direction:column;gap:8px}
+#bubble{display:none;background:rgba(0,0,0,.72);color:#fff;border-radius:14px;padding:10px 14px;font-size:15px;line-height:1.7;max-height:30vh;overflow:auto;white-space:pre-wrap}
+#row{display:flex;gap:6px}
+#chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{width:auto;margin:0;padding:6px 12px;font-size:13px;font-weight:500;background:rgba(0,0,0,.65);border-radius:999px}
+#row input{flex:1;min-width:0;border-radius:12px;border:0;padding:12px;font:inherit;font-size:15px;background:rgba(255,255,255,.93);color:#111}
+#row button{width:auto;margin:0;padding:10px 14px}
+#send{background:rgba(0,0,0,.65)}
+#mic.on{background:#e02424;animation:pulse 1s infinite}
+@keyframes pulse{50%{opacity:.6}}
+#markerView{display:none;position:fixed;inset:0;background:var(--bg);z-index:10;overflow:auto;padding:20px 16px}
+#markerBox{background:#fff;padding:6%;max-width:420px;margin:10px auto;border-radius:8px}
+#markerBox svg{width:100%;height:auto;display:block}
+#err{color:#d33;font-size:14px;margin-top:12px;min-height:20px}
+</style>
+</head>
+<body>
+<div class="card" id="intro">
+  <div style="font-size:54px">🤖</div>
+  <h1>روبوت الواقع المعزز</h1>
+  <p>شغّل الكاميرا ووجّهها على التارجت (الماركر)، وهيظهر الروبوت فوقه ويتحرك.</p>
+  <button id="startBtn">شغّل الكاميرا</button>
+  <button class="alt" id="markerBtn">اعرض التارجت</button>
+  <div id="err"></div>
+</div>
+
+<div id="stage">
+  <video id="v" playsinline muted autoplay></video>
+  <canvas id="gl"></canvas>
+  <div id="status">وجّه الكاميرا على التارجت</div>
+  <button id="stop">إيقاف</button>
+  <div id="ui">
+    <div id="bubble"></div>
+    <div id="chips"><button class="chip">إنت مين؟</button><button class="chip">احكيلي نكتة</button><button class="chip">بتعمل إيه؟</button></div>
+    <div id="row"><input id="txt" placeholder="اكتب سؤالك أو اضغط الميكروفون" autocomplete="off"><button id="send">إرسال</button><button id="mic" aria-label="تسجيل صوتي" style="display:none">🎤</button></div>
+  </div>
+</div>
+
+<div id="markerView">
+  <div style="max-width:420px;margin:0 auto;text-align:center">
+    <h2 style="margin:6px 0">التارجت</h2>
+    <p style="color:var(--muted);font-size:14px;line-height:1.7;margin:0">افتحه على شاشة تانية أو اطبعه، وخلّي الإضاءة كويسة وما تقصّش من الإطار الأبيض.</p>
+    <div id="markerBox"></div>
+    <button class="alt" id="backBtn">رجوع</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/cv.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/js-aruco2@2.0.0/src/aruco.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const DICT='ARUCO_MIP_36h12', MARKER_ID=7;
+const video=$('v'),stage=$('stage'),statusEl=$('status'),errEl=$('err');
+let renderer,scene,camera,anchor,rig={},detector,dc,dctx,dw=320,dh=240,focal=272,running=false,stream=null,lost=99,frame=0,firstSeen=true;
+const tmpP=new THREE.Vector3(),tmpQ=new THREE.Quaternion(),tmpS=new THREE.Vector3();
+
+function libsOk(){return typeof AR!=='undefined'&&typeof THREE!=='undefined'}
+
+/* ---------- عرض التارجت ---------- */
+$('markerBtn').onclick=()=>{
+  if(!libsOk()){errEl.textContent='مكتبة التعرف ما اتحمّلتش، جرّب تعمل ريفريش.';return}
+  const svgText=new AR.Dictionary(DICT).generateSVG(MARKER_ID);
+  const box=$('markerBox');box.innerHTML=svgText;
+  const s=box.querySelector('svg');
+  if(s&&!s.getAttribute('viewBox')&&s.getAttribute('width'))s.setAttribute('viewBox','0 0 '+parseFloat(s.getAttribute('width'))+' '+parseFloat(s.getAttribute('height')));
+  $('markerView').style.display='block';
+};
+$('backBtn').onclick=()=>{$('markerView').style.display='none'};
+
+/* ---------- بناء الروبوت ---------- */
+function mat(c,e){return new THREE.MeshStandardMaterial({color:c,roughness:.45,metalness:.25,emissive:e||0x000000,emissiveIntensity:e?1:0})}
+function box(w,h,d,c,x,y,z,p){const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c));m.position.set(x,y,z);(p||robot).add(m);return m}
+let robot;
+function buildRobot(){
+  robot=new THREE.Group();
+  const W=0xe9eef3,D=0x2b323c,O=0xff6b35,C=0x35e0ff;
+  box(.2,.4,.24,D,-.2,.2,0);box(.2,.4,.24,D,.2,.2,0);
+  box(.2,.1,.34,O,-.2,.05,.05);box(.2,.1,.34,O,.2,.05,.05);
+  rig.body=box(.8,.8,.5,W,0,.8,0);
+  const chest=new THREE.Mesh(new THREE.CircleGeometry(.14,24),mat(C,C));chest.position.set(0,.85,.26);robot.add(chest);rig.chest=chest;
+  box(.5,.07,.02,O,0,.6,.255);
+  rig.head=new THREE.Group();rig.head.position.set(0,1.45,0);robot.add(rig.head);
+  box(.64,.5,.5,W,0,0,0,rig.head);
+  box(.5,.2,.02,D,0,.02,.26,rig.head);
+  rig.eyes=[-.14,.14].map(x=>{const e=new THREE.Mesh(new THREE.SphereGeometry(.07,16,16),mat(C,C));e.position.set(x,.02,.275);rig.head.add(e);return e});
+  const st=new THREE.Mesh(new THREE.CylinderGeometry(.025,.025,.22,8),mat(D));st.position.set(0,.36,0);rig.head.add(st);
+  rig.ant=new THREE.Mesh(new THREE.SphereGeometry(.07,16,16),mat(O,O));rig.ant.position.set(0,.5,0);rig.head.add(rig.ant);
+  box(.08,.2,.2,D,-.36,0,0,rig.head);box(.08,.2,.2,D,.36,0,0,rig.head);
+  function arm(x){const g=new THREE.Group();g.position.set(x,1.1,0);robot.add(g);
+    const a=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.55,12),mat(W));a.position.y=-.25;g.add(a);
+    const h=new THREE.Mesh(new THREE.SphereGeometry(.11,12,12),mat(O));h.position.y=-.55;g.add(h);return g}
+  rig.armL=arm(-.55);rig.armR=arm(.55);
+  /* الروبوت واقف على مستوى التارجت: نلفّه عشان "فوق" = اتجاه عمودي على الورقة */
+  const holder=new THREE.Group();holder.rotation.x=Math.PI/2;holder.scale.setScalar(.95);holder.add(robot);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.55,.62,40),new THREE.MeshBasicMaterial({color:C,side:THREE.DoubleSide,transparent:true,opacity:.8}));
+  ring.rotation.x=-Math.PI/2;robot.add(ring);rig.ring=ring;
+  return holder;
+}
+function animate(t){
+  t/=1000;
+  robot.position.y=.08+.07*Math.sin(t*2.2);
+  robot.rotation.y=.25*Math.sin(t*.9);
+  rig.head.rotation.y=.5*Math.sin(t*1.3);rig.head.rotation.z=.08*Math.sin(t*1.7);
+  rig.armR.rotation.z=-2.3+.45*Math.sin(t*7);
+  rig.armL.rotation.z=.25*Math.sin(t*2.2+1);
+  const p=.5+.5*Math.sin(t*(talking?12:4));rig.head.rotation.x=talking?.12*Math.sin(t*10):0;rig.ant.scale.setScalar(.8+.5*p);rig.chest.scale.setScalar(.9+.2*p);
+  const blink=(t%3.2)>3.05?.1:1;rig.eyes.forEach(e=>e.scale.y=blink);
+  rig.ring.rotation.z=t;
+}
+
+/* ---------- حساب موضع الماركر (هوموجرافي) ---------- */
+function homog(s,d){
+  const A=[];
+  for(let i=0;i<4;i++){const[X,Y]=s[i],[u,v]=d[i];
+    A.push([X,Y,1,0,0,0,-u*X,-u*Y,u]);A.push([0,0,0,X,Y,1,-v*X,-v*Y,v])}
+  for(let i=0;i<8;i++){
+    let p=i;for(let r=i+1;r<8;r++)if(Math.abs(A[r][i])>Math.abs(A[p][i]))p=r;
+    if(Math.abs(A[p][i])<1e-9)return null;
+    [A[i],A[p]]=[A[p],A[i]];
+    for(let r=0;r<8;r++){if(r===i)continue;const k=A[r][i]/A[i][i];for(let c=i;c<9;c++)A[r][c]-=k*A[i][c]}
+  }
+  return A.map((r,i)=>r[8]/r[i]);
+}
+function poseMatrix(corners){
+  const cx=dw/2,cy=dh/2;
+  const h=homog([[-1,-1],[1,-1],[1,1],[-1,1]],corners.map(p=>[p.x-cx,p.y-cy]));
+  if(!h)return null;
+  const c1=new THREE.Vector3(h[0]/focal,h[3]/focal,h[6]);
+  const c2=new THREE.Vector3(h[1]/focal,h[4]/focal,h[7]);
+  const t=new THREE.Vector3(h[2]/focal,h[5]/focal,1);
+  const lam=2/(c1.length()+c2.length());
+  const r1=c1.multiplyScalar(lam).normalize();
+  const r3=r1.clone().cross(c2.clone().normalize()).normalize();
+  const r2=r3.clone().cross(r1).normalize();
+  t.multiplyScalar(lam);
+  if(t.z<=0)return null;
+  const P=new THREE.Matrix4().makeBasis(r1,r2,r3).setPosition(t);
+  const F=new THREE.Matrix4().makeScale(1,-1,-1);
+  return F.clone().multiply(P).multiply(F);
+}
+
+/* ---------- تشغيل ---------- */
+function fit(){
+  const vw=video.videoWidth,vh=video.videoHeight;if(!vw)return;
+  const k=Math.min(innerWidth/vw,innerHeight/vh);
+  const W=Math.floor(vw*k),H=Math.floor(vh*k);
+  stage.style.width=W+'px';stage.style.height=H+'px';
+  renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+  renderer.setSize(W,H,false);
+  camera.aspect=vw/vh;
+  camera.fov=2*Math.atan((dh/2)/focal)*180/Math.PI;
+  camera.updateProjectionMatrix();
+}
+async function start(){
+  errEl.textContent='';
+  if(!libsOk()){errEl.textContent='المكتبات ما اتحمّلتش، اعمل ريفريش وجرّب تاني.';return}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){errEl.textContent='المتصفح ده مش بيدعم الكاميرا.';return}
+  try{
+    try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false})}
+    catch(e){stream=await navigator.mediaDevices.getUserMedia({video:true,audio:false})}
+  }catch(e){errEl.textContent='الكاميرا ما اتفتحتش. اسمح بالإذن، ولو الصفحة مفتوحة جوه إطار افتحها في تبويب جديد.';return}
+  video.srcObject=stream;await video.play().catch(()=>{});
+  await new Promise(r=>{if(video.videoWidth)r();else video.onloadedmetadata=r});
+  const vw=video.videoWidth,vh=video.videoHeight,big=320;
+  if(vw>=vh){dw=big;dh=Math.round(big*vh/vw)}else{dh=big;dw=Math.round(big*vw/vh)}
+  focal=.85*Math.max(dw,dh);
+  dc=document.createElement('canvas');dc.width=dw;dc.height=dh;dctx=dc.getContext('2d',{willReadFrequently:true});
+  detector=new AR.Detector({dictionaryName:DICT});
+  if(!renderer){
+    renderer=new THREE.WebGLRenderer({canvas:$('gl'),alpha:true,antialias:true});renderer.setClearColor(0x000000,0);
+    scene=new THREE.Scene();camera=new THREE.PerspectiveCamera(50,1,.01,100);
+    scene.add(new THREE.HemisphereLight(0xffffff,0x445566,1.0));
+    const dl=new THREE.DirectionalLight(0xffffff,.9);dl.position.set(1,2,3);scene.add(dl);
+    anchor=new THREE.Group();anchor.visible=false;anchor.add(buildRobot());scene.add(anchor);
+  }
+  $('intro').style.display='none';stage.style.display='block';
+  fit();addEventListener('resize',fit);
+  running=true;lost=99;requestAnimationFrame(loop);
+}
+function stop(){
+  running=false;try{speechSynthesis.cancel()}catch(e){}if(stream)stream.getTracks().forEach(t=>t.stop());
+  stage.style.display='none';$('intro').style.display='block';
+}
+function loop(ts){
+  if(!running)return;requestAnimationFrame(loop);
+  if(video.readyState<2)return;
+  if(!listening&&frame++%2===0){
+    dctx.drawImage(video,0,0,dw,dh);
+    let m=[];try{m=detector.detect(dctx.getImageData(0,0,dw,dh))}catch(e){}
+    const pm=m.length?poseMatrix(m[0].corners):null;
+    if(pm){
+      pm.decompose(tmpP,tmpQ,tmpS);
+      if(firstSeen||lost>8){anchor.position.copy(tmpP);anchor.quaternion.copy(tmpQ);firstSeen=false}
+      else{anchor.position.lerp(tmpP,.6);anchor.quaternion.slerp(tmpQ,.6)}
+      anchor.visible=true;lost=0;statusEl.textContent='تم التعرف على التارجت ✓';
+    }else if(++lost>8){anchor.visible=false;statusEl.textContent='وجّه الكاميرا على التارجت'}
+  }
+  animate(ts);renderer.render(scene,camera);
+}
+/* ---------- الصوت + الرد ---------- */
+const MODE='standalone'; /* artifact = صفحة claude.ai | standalone = استضافتك مع /api/chat */
+let talking=false,history=[],busy=false,sampleFn=null,rec=null,listening=false,dict=null,dictText='',langFail=false;
+const NativeSR=window.SpeechRecognition||window.webkitSpeechRecognition;
+function show(t){const b=$('bubble');b.style.display='block';b.textContent=t;b.scrollTop=b.scrollHeight}
+function pickVoice(){const v=speechSynthesis.getVoices();return v.find(x=>/^ar[-_]EG/i.test(x.lang))||v.find(x=>/^ar/i.test(x.lang))||null}
+function speak(text){
+  if(!('speechSynthesis' in window))return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text.replace(/[*#_`]/g,''));
+  const v=pickVoice();if(v)u.voice=v;u.lang=v?v.lang:'ar-EG';
+  u.onstart=()=>{talking=true};u.onend=u.onerror=()=>{talking=false};
+  speechSynthesis.speak(u);
+}
+/* ردود جاهزة (بتشتغل عند الكل من غير ذكاء اصطناعي) */
+function norm(t){return t.replace(/[\u064B-\u065F\u0640]/g,'').replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه').toLowerCase()}
+const JOKES=['ليه الكمبيوتر راح للدكتور؟ لأن عنده فيروس!','روبوت اتأخر على الشغل، قالوله ليه؟ قال: البطارية كانت في وضع توفير الحماس.','سألوا الروبوت بتحب إيه؟ قال: الشحن، لأنه بيحسسني إني مهم.'];
+const RULES=[
+ [/(عامل ايه|ازيك|اخبارك)/,['انا تمام الحمد لله، وانت عامل ايه؟','كويس جدا، خصوصا لما حد يكلمني!']],
+ [/(انت مين|مين انت|اسمك|انت ايه)/,['انا روبو، روبوت صغير ساكن جوه الواقع المعزز.']],
+ [/(بتعمل ايه|تعمل ايه|تقدر|فايدتك)/,['انا بظهر فوق التارجت واتحرك واتكلم معاك، وممكن احكيلك نكتة.']],
+ [/(واقع معزز|كاميرا|تارجت|ماركر|ازاي بتظهر)/,['الكاميرا بتشوف الورقه المربعه دي وتحسب مكانها وزاويتها، وبعدين بترسمني فوقها في نفس المكان.']],
+ [/(نكته|اضحكني|هزار|فكاهه)/,JOKES],
+ [/(شكرا|تسلم|ميرسي|جزاك)/,['العفو، ده واجبي!','تحت امرك دايما.']],
+ [/(مع السلامه|تصبح على خير|الوداع|(^|\s)باي(\s|$))/,['مع السلامه! تيجي تاني.','باي باي، وحشتني من دلوقتي.']],
+ [/(بحبك|جميل|حلو|تحفه|ممتاز)/,['ده من ذوقك!','وانت اللي جميل والله.']],
+ [/(ارقص|رقص|تتحرك)/,['بص عليا، بلوّح بايدي واهز راسي!']],
+ [/(اهلا|مرحبا|السلام|صباح|مساء|هاي|هلو|اهلين)/,['اهلا اهلا! اسألني اي حاجه.','مرحبا بيك! انا روبو.']]
+];
+const DEFAULTS=['سؤال حلو! انا في النسخه البسيطه ومش بفهم كل حاجه. جرب تسألني: انت مين؟ او احكيلي نكته.','معلش ما فهمتش. جرب تسألني عني او اطلب مني نكته.'];
+function canned(q){const n=norm(q);for(const [re,rs] of RULES)if(re.test(n))return rs[Math.floor(Math.random()*rs.length)];return DEFAULTS[Math.floor(Math.random()*DEFAULTS.length)]}
+/* ذكاء اصطناعي */
+const SYS='انت روبوت ظريف ومساعد ذكي جوه تطبيق واقع معزز. رد دايمًا بالعربي المصري البسيط وبإجابة قصيرة (جملتين أو تلاتة بحد أقصى) لأن ردك هيتقرأ بصوت عالي. من غير رموز أو ماركداون أو إيموجي.';
+const sampleReady=(MODE==='artifact'&&window.claude&&claude.use)?claude.use('sample').then(f=>{sampleFn=f;return f}).catch(()=>null):Promise.resolve(null);
+async function remoteAI(msgs){const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:msgs})});if(!r.ok)throw new Error('http');return (await r.json()).text}
+async function ask(q){
+  q=(q||'').trim();if(!q||busy)return;
+  busy=true;show('🗣️ '+q+'\n⏳ بفكر...');
+  history.push({role:'user',content:q});history=history.slice(-5);
+  const msgs=history.map(m=>({role:m.role,content:m.content}));
+  msgs[0]={role:'user',content:SYS+'\n\n'+msgs[0].content};
+  let a='';
+  try{
+    if(MODE==='standalone')a=await remoteAI(msgs);
+    else{
+      if(!sampleFn)await Promise.race([sampleReady,new Promise(r=>setTimeout(r,2500))]);
+      if(sampleFn)a=(await sampleFn(msgs,{cache:false,modelTier:'quick'})).text;
+    }
+  }catch(e){a=''}
+  a=(a||'').trim()||canned(q);
+  history.push({role:'assistant',content:a});
+  show('🗣️ '+q+'\n🤖 '+a);speak(a);busy=false;
+}
+/* الميكروفون */
+function micState(on){$('mic').classList.toggle('on',on)}
+if(MODE==='artifact'&&window.claude&&claude.use)claude.use('dictation').then(d=>{
+  if(!d)return;dict=d;$('mic').style.display='';
+  d.onPartial(e=>{if(e.text)show('🎤 '+(dictText+' '+e.text).trim())});
+  d.onFinal(e=>{dictText+=e.text;show('🎤 '+dictText.trim())});
+  d.onState(e=>{
+    if(e.state==='idle'){
+      micState(false);
+      if(e.reason==='unavailable'){langFail=true;show('اضغط الميكروفون تاني أو اكتب سؤالك.')}
+      else if(e.reason==='not_granted'){show('الميكروفون مش مسموح. اكتب سؤالك.')}
+      else if(e.reason==='upstream_error'){show('حصلت مشكلة في الميكروفون، اكتب سؤالك.')}
+      const q=dictText.trim();dictText='';if(q)ask(q);
+    }else{micState(true);if(e.state==='listening')show('🎤 سامعك... اضغط الميكروفون تاني لما تخلص')}
+  });
+}).catch(()=>{});
+if(MODE==='standalone'&&NativeSR)$('mic').style.display='';
+function nativeListen(){
+  try{speechSynthesis.speak(new SpeechSynthesisUtterance(''))}catch(e){}
+  if(listening){rec&&rec.stop();return}
+  try{speechSynthesis.cancel()}catch(e){}
+  rec=new NativeSR();rec.lang='ar-EG';rec.interimResults=true;
+  let txt='';
+  rec.onstart=()=>{listening=true;micState(true);show('🎤 سامعك...')};
+  rec.onresult=e=>{let t='';for(const r of e.results)t+=r[0].transcript;txt=t;show('🎤 '+t)};
+  rec.onerror=e=>{show(e.error==='not-allowed'||e.error==='service-not-allowed'?'محتاج إذن الميكروفون من إعدادات المتصفح.':'ما سمعتش كويس، جرّب تاني.')};
+  rec.onend=()=>{listening=false;micState(false);if(txt)ask(txt)};
+  try{rec.start()}catch(e){show('الميكروفون ما اشتغلش، جرّب تاني.')}
+}
+function listen(){
+  if(MODE==='standalone'){if(NativeSR)nativeListen();return}
+  if(!dict)return;
+  if(dict.active()){dict.stop().catch(()=>{});return}
+  dictText='';
+  dict.start(langFail?undefined:{language:'ar'}).catch(e=>{if(e&&e.code==='no_gesture')show('اضغط الميكروفون تاني.')});
+}
+$('mic').onclick=listen;
+$('send').onclick=()=>{const v=$('txt').value;$('txt').value='';ask(v)};
+$('txt').onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();$('send').onclick()}};
+document.querySelectorAll('.chip').forEach(b=>{b.onclick=()=>ask(b.textContent)});
+$('startBtn').onclick=start;$('stop').onclick=stop;
+</script>
+</body>
+</html>
