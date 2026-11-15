@@ -321,8 +321,9 @@ function updateSun() {
   sun.position.set(Math.cos(a) * Math.cos(e) * d, Math.sin(a) * Math.cos(e) * d, Math.sin(e) * d);
 }
 
-const _e = new THREE.Euler();
+let _e = null;   // بيتعمل بعد تحميل three.js (مش وقت تشغيل السكريبت)
 function poseToQP(R, T) {
+  if (!_e) _e = new THREE.Euler();
   _e.set(-Math.asin(-R[1][2]), -Math.atan2(R[0][2], R[2][2]), Math.atan2(R[1][0], R[1][1]), 'XYZ');
   return { q: new THREE.Quaternion().setFromEuler(_e), p: new THREE.Vector3(T[0], T[1], -T[2]) };
 }
